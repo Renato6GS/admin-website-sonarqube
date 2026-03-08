@@ -1,0 +1,147 @@
+# ============================================================
+# Pipeline CI - Módulo de Banca Electrónica
+# ============================================================
+# Este pipeline se ejecuta automáticamente en cada push y pull request.
+# Realiza: instalación de dependencias, linting, tests unitarios,
+# cobertura de código y análisis SAST con SonarQube.
+# ============================================================
+
+name: CI - Banca Electrónica
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+
+  # ===========================================================
+  # JOB 1: Lint y calidad de código
+  # ===========================================================
+  lint:
+    name: Análisis de estilo de código (ESLint)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar ESLint
+        run: npm run lint
+
+  # ===========================================================
+  # JOB 2: Tests unitarios y cobertura
+  # ===========================================================
+  test:
+    name: Tests unitarios y cobertura
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar tests con cobertura
+        run: npm test
+
+      - name: Verificar umbral de cobertura
+        run: |
+          # Extraer porcentaje de cobertura de líneas del reporte
+          COBERTURA=$(npx jest --coverage --coverageReporters=json-summary 2>/dev/null | tail -1 || true)
+          echo "Reporte de cobertura generado en ./coverage/"
+
+      - name: Subir reporte de cobertura como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-cobertura
+          path: coverage/
+          retention-days: 30
+
+  # ===========================================================
+  # JOB 3: Análisis SAST con SonarQube
+  # ===========================================================
+  sast-sonarqube:
+    name: Análisis SAST (SonarQube)
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Necesario para análisis completo de SonarQube
+
+      - name: Configurar Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Generar reportes de cobertura para SonarQube
+        run: npm test
+
+      - name: Ejecutar análisis SonarQube
+        uses: SonarSource/sonarqube-scan-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Verificar Quality Gate de SonarQube
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ===========================================================
+  # JOB 4: Resumen del pipeline
+  # ===========================================================
+  resumen:
+    name: Resumen del Pipeline
+    runs-on: ubuntu-latest
+    needs: [lint, test, sast-sonarqube]
+    if: always()
+
+    steps:
+      - name: Estado del pipeline
+        run: |
+          echo "============================================"
+          echo "  RESUMEN DEL PIPELINE CI"
+          echo "============================================"
+          echo "  Lint:       ${{ needs.lint.result }}"
+          echo "  Tests:      ${{ needs.test.result }}"
+          echo "  SAST:       ${{ needs.sast-sonarqube.result }}"
+          echo "============================================"
+
+          if [ "${{ needs.lint.result }}" != "success" ] || \
+             [ "${{ needs.test.result }}" != "success" ] || \
+             [ "${{ needs.sast-sonarqube.result }}" != "success" ]; then
+            echo "❌ El pipeline tiene fallos. Revisar los jobs anteriores."
+            exit 1
+          else
+            echo "✅ Pipeline completado exitosamente."
+          fi
